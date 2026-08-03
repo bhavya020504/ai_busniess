@@ -2,26 +2,30 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { Pool } from 'pg';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// ES‑module __dirname shim
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
+// Global middleware
 app.use(cors());
 app.use(express.json());
 
-// Neon PostgreSQL Connection Pool
+// Neon PostgreSQL connection pool
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false,
-  },
+  ssl: { rejectUnauthorized: false },
 });
 
-// Initialize Database Table
+// DB initialization (run once at startup)
 const initDb = async () => {
   try {
     const client = await pool.connect();
@@ -39,133 +43,107 @@ const initDb = async () => {
       );
     `);
     client.release();
-    console.log('✅ Neon PostgreSQL Database connected & "leads" table ready.');
+    console.log('✅ Neon PostgreSQL connected & leads table ready.');
   } catch (error) {
-    console.error('❌ Neon DB initialization error:', error);
+    console.error('❌ Neon DB init error:', error);
   }
 };
 
 initDb();
 
-// POST /api/leads - Save new lead to Neon DB & trigger automated call
+// ------------------- API ENDPOINTS (unchanged) -------------------
+
+// POST /api/leads – create a lead & optionally trigger a call webhook
 app.post('/api/leads', async (req: Request, res: Response) => {
   try {
     const { companyName, contactPerson, businessEmail, phoneNumber, industry } = req.body;
-
     if (!companyName || !contactPerson || !businessEmail || !phoneNumber || !industry) {
-      return res.status(400).json({
-        success: false,
-        message: 'All fields are required.',
-      });
+      return res.status(400).json({ success: false, message: 'All fields are required.' });
     }
-
     const leadId = 'AIB-' + Math.floor(100000 + Math.random() * 900000);
     const callStatus = 'CALL_TRIGGERED';
-
     const insertQuery = `
-      INSERT INTO leads (lead_id, company_name, contact_person, business_email, phone_number, industry, call_status)
+      INSERT INTO leads
+        (lead_id, company_name, contact_person, business_email, phone_number, industry, call_status)
       VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *;
     `;
-
     const values = [leadId, companyName, contactPerson, businessEmail, phoneNumber, industry, callStatus];
     const result = await pool.query(insertQuery, values);
     const newLead = result.rows[0];
-
-    console.log(`🚀 New lead stored in Neon DB! ID: ${leadId}, Company: ${companyName}, Phone: ${phoneNumber}`);
-    console.log(`📞 Automated call trigger dispatched for ${contactPerson} at ${phoneNumber}`);
-
-    // If CALL_WEBHOOK_URL is set in .env (e.g., Bland.ai / Vapi / Twilio webhook), trigger HTTP call request
+    console.log(`🚀 New lead stored – ID:${leadId} Company:${companyName}`);
     if (process.env.CALL_WEBHOOK_URL) {
       try {
         await fetch(process.env.CALL_WEBHOOK_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            leadId,
-            companyName,
-            contactPerson,
-            businessEmail,
-            phoneNumber,
-            industry,
-          }),
+          body: JSON.stringify({ leadId, companyName, contactPerson, businessEmail, phoneNumber, industry }),
         });
-        console.log(`📡 Call Webhook successfully notified!`);
+        console.log('📡 Call webhook notified.');
       } catch (webhookErr) {
-        console.error('Call webhook trigger error:', webhookErr);
+        console.error('Call webhook error:', webhookErr);
       }
     }
-
-    return res.status(200).json({
-      success: true,
-      message: 'Thank you! Your request has been received. Our AI Consultant will contact you shortly.',
-      lead: newLead,
-    });
+    return res.status(200).json({ success: true, message: 'Thank you! Your request has been received.', lead: newLead });
   } catch (error: any) {
-    console.error('Error saving lead to Neon DB:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to save lead to database. ' + (error.message || ''),
-    });
+    console.error('Error saving lead:', error);
+    return res.status(500).json({ success: false, message: 'Failed to save lead. ' + (error.message || '') });
   }
 });
 
-// GET /api/leads - Retrieve all leads stored in Neon DB (protected)
+// GET /api/leads – protected list of leads
 app.get('/api/leads', async (req: Request, res: Response) => {
   const authHeader = req.headers.authorization || '';
   if (!ADMIN_PASSWORD || authHeader !== ADMIN_PASSWORD) {
-    console.warn('Unauthorized attempt to fetch leads');
+    console.warn('Unauthorized leads fetch attempt');
     return res.status(401).json({ success: false, message: 'Unauthorized' });
   }
   try {
     const result = await pool.query('SELECT * FROM leads ORDER BY created_at DESC;');
-    return res.status(200).json({
-      success: true,
-      count: result.rows.length,
-      leads: result.rows,
-    });
+    return res.status(200).json({ success: true, count: result.rows.length, leads: result.rows });
   } catch (error: any) {
     console.error('Error fetching leads:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to fetch leads from database.',
-    });
+    return res.status(500).json({ success: false, message: 'Failed to fetch leads.' });
   }
 });
 
-// POST /api/leads/:leadId/trigger-call - Manually trigger an AI call for a specific lead
+// POST /api/leads/:leadId/trigger-call – manual call trigger
 app.post('/api/leads/:leadId/trigger-call', async (req: Request, res: Response) => {
   try {
     const { leadId } = req.params;
-
     const findResult = await pool.query('SELECT * FROM leads WHERE lead_id = $1 OR id::text = $1;', [leadId]);
     if (findResult.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Lead not found.' });
     }
-
     const lead = findResult.rows[0];
-
-    // Update status in Neon DB
     await pool.query('UPDATE leads SET call_status = $1 WHERE id = $2;', ['CALL_TRIGGERED', lead.id]);
-
-    console.log(`📞 Call manually triggered for Lead: ${lead.contact_person} (${lead.phone_number})`);
-
-    return res.status(200).json({
-      success: true,
-      message: `Call successfully triggered for ${lead.contact_person} (${lead.phone_number})!`,
-      lead,
-    });
+    console.log(`📞 Manual call triggered for ${lead.contact_person} (${lead.phone_number})`);
+    return res.status(200).json({ success: true, message: `Call triggered for ${lead.contact_person} (${lead.phone_number})!`, lead });
   } catch (error: any) {
     console.error('Error triggering call:', error);
     return res.status(500).json({ success: false, message: 'Failed to trigger call.' });
   }
 });
 
-// Health check endpoint
+// GET /api/health – health check endpoint
 app.get('/api/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', service: 'AIBridge Neon DB & Call Trigger API' });
 });
 
+// ------------------- PRODUCTION STATIC SERVING -------------------
+
+// Serve Vite's build output
+app.use(express.static(path.resolve(__dirname, 'dist')));
+
+// Fallback for React Router – send index.html for any non‑API route
+app.get('*', (req: Request, res: Response) => {
+  if (req.path.startsWith('/api')) {
+    return res.status(404).json({ success: false, message: 'Not found' });
+  }
+  res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+});
+
+// Start server
 app.listen(PORT, () => {
   console.log(`⚡ AIBridge API server running on http://localhost:${PORT}`);
 });
