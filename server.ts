@@ -136,10 +136,14 @@ app.get('/api/health', (_req: Request, res: Response) => {
 app.use(express.static(path.resolve(__dirname, 'dist')));
 
 // Fallback for React Router – send index.html for any non‑API route
-app.get('*', (req: Request, res: Response) => {
+app.use((req: Request, res: Response) => {
   if (req.path.startsWith('/api')) {
-    return res.status(404).json({ success: false, message: 'Not found' });
+    return res.status(404).json({
+      success: false,
+      message: 'Not found',
+    });
   }
+
   res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
 });
 
