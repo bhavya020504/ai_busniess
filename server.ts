@@ -6,31 +6,29 @@ import { Pool } from 'pg';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// ES-module __dirname shim
+dotenv.config();
+
+// __dirname shim for ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-dotenv.config();
-
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = Number(process.env.PORT) || 3001;
 
-// Global middleware
+// Middleware
 app.use(cors());
 app.use(express.json());
 
-// PostgreSQL connection pool (Neon)
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? '';
+// PostgreSQL pool (Neon)
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
 
-// Initialize database (create leads table if missing)
-const initDb = async () => {
+// Initialize DB: ensure leads table
+async function initDb(): Promise<void> {
+  const client = await pool.connect();
   try {
-    const client = await pool.connect();
-
     await client.query(`
       CREATE TABLE IF NOT EXISTS leads (
         id SERIAL PRIMARY KEY,
@@ -41,45 +39,57 @@ const initDb = async () => {
         phone_number VARCHAR(50) NOT NULL,
         industry VARCHAR(100) NOT NULL,
         call_status VARCHAR(50) DEFAULT 'NEW_LEAD_PENDING_CALL',
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       );
     `);
-
+    console.log('✅ DB ready – leads table ensured');
+  } finally {
     client.release();
-    console.log("✅ Neon PostgreSQL connected & leads table ready.");
-  } catch (error) {
-    console.error("❌ Neon DB init error:", error);
   }
-};
-    client.release();
-    console.log('? Neon PostgreSQL connected & leads table ready.');
-  } catch (error) {
-    console.error('? Neon DB init error:', error);
-  }
-};
-initDb();
+}
 
-// ------------------- API ENDPOINTS (unchanged) -------------------
+initDb().catch(err => console.error('DB init error:', err));
 
-// POST /api/leads – create a lead & optionally trigger a call webhook
+// Types
+interface LeadInput {
+  companyName: string;
+  contactPerson: string;
+  businessEmail: string;
+  phoneNumber: string;
+  industry: string;
+}
+
+interface Lead extends LeadInput {
+  id: number;
+  lead_id: string;
+  call_status: string;
+  created_at: string;
+}
+
+function generateLeadId(): string {
+  return 'AIB-' + Math.floor(100000 + Math.random() * 900000);
+}
+
+// Health check
+app.get('/api/health', (_req: Request, res: Response) => {
+  res.json({ status: 'ok', service: 'AIBridge API' });
+});
+
+// Create lead
 app.post('/api/leads', async (req: Request, res: Response) => {
+  const { companyName, contactPerson, businessEmail, phoneNumber, industry } = req.body as LeadInput;
+  if (!companyName || !contactPerson || !businessEmail || !phoneNumber || !industry) {
+    return res.status(400).json({ success: false, message: 'All fields are required.' });
+  }
+  const leadId = generateLeadId();
+  const callStatus = 'CALL_TRIGGERED';
   try {
-    const { companyName, contactPerson, businessEmail, phoneNumber, industry } = req.body;
-    if (!companyName || !contactPerson || !businessEmail || !phoneNumber || !industry) {
-      return res.status(400).json({ success: false, message: 'All fields are required.' });
-    }
-    const leadId = 'AIB-' + Math.floor(100000 + Math.random() * 900000);
-    const callStatus = 'CALL_TRIGGERED';
-    const insertQuery = 
-      INSERT INTO leads
-        (lead_id, company_name, contact_person, business_email, phone_number, industry, call_status)
-      VALUES (, , , , , , )
-      RETURNING *;
-    ;
-    const values = [leadId, companyName, contactPerson, businessEmail, phoneNumber, industry, callStatus];
-    const result = await pool.query(insertQuery, values);
-    const newLead = result.rows[0];
-    console.log(?? New lead stored – ID: Company:);
+    const result = await pool.query(
+      `INSERT INTO leads (lead_id, company_name, contact_person, business_email, phone_number, industry, call_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *;`,
+      [leadId, companyName, contactPerson, businessEmail, phoneNumber, industry, callStatus]
+    );
+    const newLead = result.rows[0] as Lead;
     if (process.env.CALL_WEBHOOK_URL) {
       try {
         await fetch(process.env.CALL_WEBHOOK_URL, {
@@ -87,68 +97,64 @@ app.post('/api/leads', async (req: Request, res: Response) => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ leadId, companyName, contactPerson, businessEmail, phoneNumber, industry }),
         });
-        console.log('?? Call webhook notified.');
-      } catch (webhookErr) {
-        console.error('Call webhook error:', webhookErr);
+        console.log('✅ Call webhook notified');
+      } catch (wh) {
+        console.error('⚠️ Call webhook error:', wh);
       }
     }
-    return res.status(200).json({ success: true, message: 'Thank you! Your request has been received.', lead: newLead });
-  } catch (error: any) {
-    console.error('Error saving lead:', error);
-    return res.status(500).json({ success: false, message: 'Failed to save lead. ' + (error.message ?? '') });
+    res.status(201).json({ success: true, lead: newLead });
+  } catch (err) {
+    console.error('Insert lead error:', err);
+    res.status(500).json({ success: false, message: 'Failed to save lead.' });
   }
 });
 
-// GET /api/leads – protected list of leads
+// List leads (protected)
 app.get('/api/leads', async (req: Request, res: Response) => {
+  const adminPwd = process.env.ADMIN_PASSWORD || '';
   const authHeader = req.headers.authorization || '';
-  if (!ADMIN_PASSWORD || authHeader !== ADMIN_PASSWORD) {
-    console.warn('Unauthorized leads fetch attempt');
+  if (!adminPwd || authHeader !== adminPwd) {
     return res.status(401).json({ success: false, message: 'Unauthorized' });
   }
   try {
     const result = await pool.query('SELECT * FROM leads ORDER BY created_at DESC;');
-    return res.status(200).json({ success: true, count: result.rows.length, leads: result.rows });
-  } catch (error: any) {
-    console.error('Error fetching leads:', error);
-    return res.status(500).json({ success: false, message: 'Failed to fetch leads.' });
+    res.json({ success: true, count: result.rowCount, leads: result.rows });
+  } catch (err) {
+    console.error('Fetch leads error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch leads.' });
   }
 });
 
-// POST /api/leads/:leadId/trigger-call – manual call trigger
+// Manual call trigger
 app.post('/api/leads/:leadId/trigger-call', async (req: Request, res: Response) => {
+  const { leadId } = req.params;
   try {
-    const { leadId } = req.params;
-    const findResult = await pool.query('SELECT * FROM leads WHERE lead_id =  OR id::text = ;', [leadId]);
-    if (findResult.rows.length === 0) {
+    const findRes = await pool.query(
+      'SELECT * FROM leads WHERE lead_id = $1 OR id::text = $1;',
+      [leadId]
+    );
+    if (findRes.rowCount === 0) {
       return res.status(404).json({ success: false, message: 'Lead not found.' });
     }
-    const lead = findResult.rows[0];
-    await pool.query('UPDATE leads SET call_status =  WHERE id = ;', ['CALL_TRIGGERED', lead.id]);
-    console.log(?? Manual call triggered for  ());
-    return res.status(200).json({ success: true, message: Call triggered for  ()!, lead });
-  } catch (error: any) {
-    console.error('Error triggering call:', error);
-    return res.status(500).json({ success: false, message: 'Failed to trigger call.' });
+    const lead = findRes.rows[0] as Lead;
+    await pool.query('UPDATE leads SET call_status = $1 WHERE id = $2;', ['CALL_TRIGGERED', lead.id]);
+    console.log(`✅ Manual call triggered for lead ${lead.lead_id}`);
+    res.json({ success: true, message: `Call triggered for lead ${lead.lead_id}`, lead });
+  } catch (err) {
+    console.error('Trigger call error:', err);
+    res.status(500).json({ success: false, message: 'Failed to trigger call.' });
   }
 });
 
-// GET /api/health – health check endpoint
-app.get('/api/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok', service: 'AIBridge Neon DB & Call Trigger API' });
-});
-
-// ------------------- PRODUCTION STATIC SERVING -------------------
-
+// Serve static files
 app.use(express.static(path.resolve(__dirname, 'dist')));
 
+// SPA fallback for Express 5
 app.use((req: Request, res: Response, next: NextFunction) => {
-  if (req.path.startsWith('/api')) {
-    return next();
-  }
+  if (req.path.startsWith('/api')) return next();
   res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
 });
 
 app.listen(PORT, () => {
-  console.log(? AIBridge API server running on http://localhost:);
+  console.log(`🚀 Server listening on http://localhost:${PORT}`);
 });
