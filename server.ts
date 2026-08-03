@@ -30,7 +30,8 @@ const pool = new Pool({
 const initDb = async () => {
   try {
     const client = await pool.connect();
-    await client.query(
+
+    await client.query(`
       CREATE TABLE IF NOT EXISTS leads (
         id SERIAL PRIMARY KEY,
         lead_id VARCHAR(50) UNIQUE NOT NULL,
@@ -42,7 +43,14 @@ const initDb = async () => {
         call_status VARCHAR(50) DEFAULT 'NEW_LEAD_PENDING_CALL',
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
-    );
+    `);
+
+    client.release();
+    console.log("âœ… Neon PostgreSQL connected & leads table ready.");
+  } catch (error) {
+    console.error("âŒ Neon DB init error:", error);
+  }
+};
     client.release();
     console.log('? Neon PostgreSQL connected & leads table ready.');
   } catch (error) {
@@ -53,7 +61,7 @@ initDb();
 
 // ------------------- API ENDPOINTS (unchanged) -------------------
 
-// POST /api/leads – create a lead & optionally trigger a call webhook
+// POST /api/leads â€“ create a lead & optionally trigger a call webhook
 app.post('/api/leads', async (req: Request, res: Response) => {
   try {
     const { companyName, contactPerson, businessEmail, phoneNumber, industry } = req.body;
@@ -71,7 +79,7 @@ app.post('/api/leads', async (req: Request, res: Response) => {
     const values = [leadId, companyName, contactPerson, businessEmail, phoneNumber, industry, callStatus];
     const result = await pool.query(insertQuery, values);
     const newLead = result.rows[0];
-    console.log(?? New lead stored – ID: Company:);
+    console.log(?? New lead stored â€“ ID: Company:);
     if (process.env.CALL_WEBHOOK_URL) {
       try {
         await fetch(process.env.CALL_WEBHOOK_URL, {
@@ -91,7 +99,7 @@ app.post('/api/leads', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/leads – protected list of leads
+// GET /api/leads â€“ protected list of leads
 app.get('/api/leads', async (req: Request, res: Response) => {
   const authHeader = req.headers.authorization || '';
   if (!ADMIN_PASSWORD || authHeader !== ADMIN_PASSWORD) {
@@ -107,7 +115,7 @@ app.get('/api/leads', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/leads/:leadId/trigger-call – manual call trigger
+// POST /api/leads/:leadId/trigger-call â€“ manual call trigger
 app.post('/api/leads/:leadId/trigger-call', async (req: Request, res: Response) => {
   try {
     const { leadId } = req.params;
@@ -125,7 +133,7 @@ app.post('/api/leads/:leadId/trigger-call', async (req: Request, res: Response) 
   }
 });
 
-// GET /api/health – health check endpoint
+// GET /api/health â€“ health check endpoint
 app.get('/api/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', service: 'AIBridge Neon DB & Call Trigger API' });
 });
