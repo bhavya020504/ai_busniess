@@ -36,6 +36,10 @@
     "oxlint": "^1.75.0",
     "postcss": "^8.5.25",
     "tailwindcss": "^4.3.3",
-    "tsx": "^4.23.5"
+    "tsx": "^4.23.5",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

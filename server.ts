@@ -53,9 +53,9 @@ initDb().catch(err => console.error('DB init error:', err));
 // Types
 interface LeadInput {
   companyName: string;
-  contactPerson: string;
-  businessEmail: string;
-  phoneNumber: string;
+  contact_person: string;
+  business_email: string;
+  phone_number: string;
   industry: string;
 }
 
@@ -77,8 +77,8 @@ app.get('/api/health', (_req: Request, res: Response) => {
 
 // Create lead
 app.post('/api/leads', async (req: Request, res: Response) => {
-  const { companyName, contactPerson, businessEmail, phoneNumber, industry } = req.body as LeadInput;
-  if (!companyName || !contactPerson || !businessEmail || !phoneNumber || !industry) {
+  const { companyName, contact_person, business_email, phone_number, industry } = req.body as LeadInput;
+  if (!companyName || !contact_person || !business_email || !phone_number || !industry) {
     return res.status(400).json({ success: false, message: 'All fields are required.' });
   }
   const leadId = generateLeadId();
@@ -87,7 +87,7 @@ app.post('/api/leads', async (req: Request, res: Response) => {
     const result = await pool.query(
       `INSERT INTO leads (lead_id, company_name, contact_person, business_email, phone_number, industry, call_status)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *;`,
-      [leadId, companyName, contactPerson, businessEmail, phoneNumber, industry, callStatus]
+      [leadId, companyName, contact_person, business_email, phone_number, industry, callStatus]
     );
     const newLead = result.rows[0] as Lead;
     if (process.env.CALL_WEBHOOK_URL) {
@@ -95,7 +95,7 @@ app.post('/api/leads', async (req: Request, res: Response) => {
         await fetch(process.env.CALL_WEBHOOK_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ leadId, companyName, contactPerson, businessEmail, phoneNumber, industry }),
+          body: JSON.stringify({ leadId, companyName, contact_person, business_email, phone_number, industry }),
         });
         console.log('✅ Call webhook notified');
       } catch (wh) {
